@@ -1,0 +1,17 @@
+
+# Dépendances
+node_modules/
+
+# Logs
+*.log
+
+# Variables d'environnement
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
