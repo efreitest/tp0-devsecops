@@ -8,6 +8,10 @@ on:
   # Permet de lancer manuellement
   workflow_dispatch:
 
+permissions:
+  contents: read
+  security-events: write
+
 jobs:
   # ===========================================
   # JOB 1 : Générer le SBOM
