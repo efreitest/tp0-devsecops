@@ -1,0 +1,135 @@
+name: Security Scan
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: [main]
+  # Permet de lancer manuellement
+  workflow_dispatch:
+
+jobs:
+  # ===========================================
+  # JOB 1 : Générer le SBOM
+  # ===========================================
+  sbom:
+    name: 📦 Generate SBOM
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 📚 Install dependencies
+        run: npm ci
+
+      - name: 🔧 Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: 📋 Generate SBOM (CycloneDX)
+        run: syft . -o cyclonedx-json > sbom.json
+
+      - name: 📤 Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+
+  # ===========================================
+  # JOB 2 : Scanner avec Grype
+  # ===========================================
+  grype-scan:
+    name: 🔍 Grype Vulnerability Scan
+    needs: sbom
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom
+
+      - name: 🔧 Install Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: 🔍 Scan vulnerabilities
+        run: grype sbom:sbom.json -o table
+
+      - name: 📊 Generate JSON report
+        run: grype sbom:sbom.json -o json > grype-results.json
+
+      - name: 📤 Upload Grype results
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-results
+          path: grype-results.json
+
+      # Quality Gate : échoue si vulnérabilités CRITICAL
+      - name: 🚨 Check for Critical vulnerabilities
+        run: |
+          CRITICAL=$(cat grype-results.json | jq '[.matches[] | select(.vulnerability.severity=="Critical")] | length')
+          echo "Critical vulnerabilities: $CRITICAL"
+          if [ "$CRITICAL" -gt 0 ]; then
+            echo "❌ Critical vulnerabilities found!"
+            exit 1
+          fi
+          echo "✅ No critical vulnerabilities"
+
+  # ===========================================
+  # JOB 3 : Scanner avec Trivy
+  # ===========================================
+  trivy-scan:
+    name: 🛡️ Trivy Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🛡️ Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+
+      - name: 🛡️ Run Trivy (SARIF output)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: 📤 Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # ===========================================
+  # JOB 4 : Résumé
+  # ===========================================
+  summary:
+    name: 📊 Security Summary
+    needs: [sbom, grype-scan, trivy-scan]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: 📊 Generate Summary
+        run: |
+          echo "## 🔐 Security Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Job | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| SBOM Generation | ${{ needs.sbom.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Grype Scan | ${{ needs.grype-scan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Trivy Scan | ${{ needs.trivy-scan.result }} |" >> $GITHUB_STEP_SUMMARY
